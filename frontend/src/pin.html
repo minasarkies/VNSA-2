@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>VNSA 2.0</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@200;300;400;600&display=swap');
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  width: 100%; height: 100%;
+  background: transparent;
+  font-family: 'Share Tech Mono', monospace;
+  overflow: hidden;
+  user-select: none;
+}
+#shell {
+  width: 100%; height: 100%;
+  background: rgba(2, 9, 18, 0.97);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+}
+#bg { position: absolute; inset: 0; pointer-events: none; opacity: 0.05; }
+
+.corner { position: absolute; width: 14px; height: 14px; }
+.corner.tl { top: 8px; left: 8px;  border-top: 1px solid #38bdf8; border-left:  1px solid #38bdf8; }
+.corner.tr { top: 8px; right: 8px; border-top: 1px solid #38bdf8; border-right: 1px solid #38bdf8; }
+.corner.bl { bottom: 8px; left: 8px;  border-bottom: 1px solid #38bdf8; border-left:  1px solid #38bdf8; }
+.corner.br { bottom: 8px; right: 8px; border-bottom: 1px solid #38bdf8; border-right: 1px solid #38bdf8; }
+
+#drag { position: absolute; top: 0; left: 0; right: 0; height: 38px; -webkit-app-region: drag; }
+.wbtn {
+  position: absolute; top: 9px;
+  width: 22px; height: 22px; border: none; background: transparent;
+  color: #1e3a52; font-size: 12px; cursor: pointer; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  -webkit-app-region: no-drag; transition: color 0.15s, background 0.15s;
+}
+.wbtn:hover { color: #38bdf8; background: rgba(56,189,248,0.1); }
+.wbtn.close:hover { color: #f87171; background: rgba(248,113,113,0.12); }
+#wmin   { right: 34px; }
+#wclose { right: 9px; }
+
+#orb {
+  width: 54px; height: 54px; border-radius: 50%; flex-shrink: 0;
+  background: radial-gradient(circle at 38% 38%,
+    rgba(103,232,249,0.9) 0%, rgba(56,189,248,0.55) 40%, transparent 100%);
+  box-shadow: 0 0 22px rgba(56,189,248,0.5), 0 0 44px rgba(56,189,248,0.15);
+  animation: orb-pulse 3s ease-in-out infinite;
+  margin-bottom: 14px;
+}
+@keyframes orb-pulse {
+  0%,100% { transform: scale(1); }
+  50%      { transform: scale(1.07); }
+}
+
+#logo { color: #38bdf8; font-size: 15px; letter-spacing: 5px;
+        text-shadow: 0 0 12px rgba(56,189,248,0.6); margin-bottom: 3px; }
+#sub  { color: rgba(56,189,248,0.35); font-size: 8px; letter-spacing: 2px; margin-bottom: 6px; }
+#note { color: rgba(56,189,248,0.45); font-size: 8px; letter-spacing: 1px;
+        text-align: center; line-height: 1.7; margin-bottom: 16px;
+        min-height: 28px; white-space: pre-line; }
+
+#dots-wrap { display: flex; justify-content: center; gap: 11px; margin-bottom: 18px; }
+.dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 1px solid rgba(56,189,248,0.3); background: transparent;
+  transition: all 0.15s;
+}
+.dot.filled { background: #38bdf8; border-color: #38bdf8; box-shadow: 0 0 7px rgba(56,189,248,0.6); }
+.dot.err    { background: #f87171; border-color: #f87171; animation: shake 0.35s ease; }
+@keyframes shake {
+  0%,100%{transform:translateX(0)} 25%{transform:translateX(-5px)} 75%{transform:translateX(5px)}
+}
+
+/* THE FIX: explicit grid so it never collapses to 1 column */
+#numpad {
+  display: grid;
+  grid-template-columns: 64px 64px 64px;
+  grid-template-rows: 50px 50px 50px 50px;
+  gap: 8px;
+  width: 208px; /* 3*64 + 2*8 */
+}
+.nb {
+  width: 64px; height: 50px;
+  background: rgba(6,18,38,0.85);
+  border: 1px solid rgba(56,189,248,0.1);
+  border-radius: 10px;
+  color: #94a3b8;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 17px;
+  cursor: pointer;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  line-height: 1; transition: all 0.15s;
+}
+.nb:hover  { border-color: rgba(56,189,248,0.3); color: #e2e8f0; background: rgba(56,189,248,0.07); }
+.nb:active { transform: scale(0.92); }
+.nb .sub   { font-size: 6px; letter-spacing: 1px; color: #1e3a52; margin-top: 3px; }
+.nb.ok  { color: #22d3ee; }
+.nb.del { color: #f87171; }
+
+#msg { margin-top: 12px; font-size: 9px; letter-spacing: 2px;
+       color: rgba(248,113,113,0.75); min-height: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="shell">
+  <canvas id="bg"></canvas>
+  <div class="corner tl"></div><div class="corner tr"></div>
+  <div class="corner bl"></div><div class="corner br"></div>
+
+  <div id="drag">
+    <button class="wbtn" id="wmin"   onclick="min()">-</button>
+    <button class="wbtn close" id="wclose" onclick="quit()">x</button>
+  </div>
+
+  <div id="orb"></div>
+  <div id="logo">V.N.S.A</div>
+  <div id="sub">2.0</div>
+  <div id="note"></div>
+  <div id="dots-wrap"></div>
+
+  <div id="numpad">
+    <button class="nb" onclick="p('1')">1</button>
+    <button class="nb" onclick="p('2')">2<span class="sub">ABC</span></button>
+    <button class="nb" onclick="p('3')">3<span class="sub">DEF</span></button>
+    <button class="nb" onclick="p('4')">4<span class="sub">GHI</span></button>
+    <button class="nb" onclick="p('5')">5<span class="sub">JKL</span></button>
+    <button class="nb" onclick="p('6')">6<span class="sub">MNO</span></button>
+    <button class="nb" onclick="p('7')">7<span class="sub">PQRS</span></button>
+    <button class="nb" onclick="p('8')">8<span class="sub">TUV</span></button>
+    <button class="nb" onclick="p('9')">9<span class="sub">WXYZ</span></button>
+    <button class="nb ok"  onclick="p('ok')">OK</button>
+    <button class="nb" onclick="p('0')">0</button>
+    <button class="nb del" onclick="p('del')">DEL</button>
+  </div>
+  <div id="msg"></div>
+</div>
+
+<script>
+const { ipcRenderer } = require('electron');
+const crypto = require('crypto');
+const path   = require('path');
+const fs     = require('fs');
+
+const PIN_FILE     = path.join(__dirname, '../../backend/config/.pin_hash');
+const MIN_LEN      = 4;
+const MAX_LEN      = 6;
+const MAX_ATTEMPTS = 5;
+
+let entered   = '';
+let attempts  = 0;
+let setupStep = 'choose'; // 'choose' | 'confirm'
+let chosenPin = '';
+let isSetup   = false;
+
+function hashPin(pin) {
+  return crypto.createHash('sha256').update('VNSA2_' + pin).digest('hex');
+}
+function hasPIN() {
+  try { return fs.existsSync(PIN_FILE); } catch(e) { return false; }
+}
+function savePin(pin) {
+  fs.mkdirSync(path.dirname(PIN_FILE), { recursive: true });
+  fs.writeFileSync(PIN_FILE, hashPin(pin), 'utf-8');
+}
+function verify(pin) {
+  return fs.readFileSync(PIN_FILE, 'utf-8').trim() === hashPin(pin);
+}
+
+window.onload = () => {
+  isSetup = !hasPIN();
+  refresh();
+  renderDots();
+  grid();
+  document.addEventListener('keydown', onKey);
+};
+
+function refresh() {
+  const note = document.getElementById('note');
+  const sub  = document.getElementById('sub');
+  if (isSetup) {
+    sub.textContent  = setupStep === 'choose' ? '2.0  NEW PIN' : '2.0  CONFIRM';
+    note.textContent = setupStep === 'choose'
+      ? 'FIRST TIME SETUP\nCHOOSE A 4-6 DIGIT PIN'
+      : 'ENTER PIN AGAIN\nTO CONFIRM';
+  } else {
+    sub.textContent  = '2.0  AUTHENTICATE';
+    note.textContent = '';
+  }
+}
+
+function p(key) {
+  document.getElementById('msg').textContent = '';
+  if (key === 'del') { entered = entered.slice(0, -1); renderDots(); return; }
+  if (key === 'ok')  { submit(); return; }
+  if (entered.length < MAX_LEN) {
+    entered += key;
+    renderDots();
+    if (!isSetup && entered.length >= MIN_LEN) setTimeout(submit, 120);
+  }
+}
+
+function submit() {
+  if (entered.length < MIN_LEN) { msg('MIN ' + MIN_LEN + ' DIGITS'); return; }
+  if (isSetup) {
+    if (setupStep === 'choose') {
+      chosenPin = entered; entered = '';
+      setupStep = 'confirm'; refresh(); renderDots();
+    } else {
+      if (entered === chosenPin) {
+        savePin(entered); flash('ok');
+        setTimeout(() => ipcRenderer.send('pin-ok'), 600);
+      } else {
+        flash('err'); msg("NO MATCH  TRY AGAIN");
+        entered = ''; chosenPin = ''; setupStep = 'choose';
+        setTimeout(() => { renderDots(); refresh(); }, 900);
+      }
+    }
+  } else {
+    if (verify(entered)) {
+      flash('ok');
+      setTimeout(() => ipcRenderer.send('pin-ok'), 600);
+    } else {
+      attempts++;
+      flash('err');
+      const left = MAX_ATTEMPTS - attempts;
+      msg(left > 0 ? 'WRONG  ' + left + ' LEFT' : 'LOCKED');
+      entered = '';
+      setTimeout(renderDots, 700);
+      if (attempts >= MAX_ATTEMPTS)
+        setTimeout(() => ipcRenderer.send('pin-lockout'), 900);
+    }
+  }
+}
+
+function onKey(e) {
+  if (e.key >= '0' && e.key <= '9') p(e.key);
+  else if (e.key === 'Backspace')    p('del');
+  else if (e.key === 'Enter')        p('ok');
+}
+
+function renderDots() {
+  const wrap = document.getElementById('dots-wrap');
+  const len  = Math.max(MIN_LEN, entered.length);
+  wrap.innerHTML = '';
+  for (let i = 0; i < len; i++) {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i < entered.length ? ' filled' : '');
+    wrap.appendChild(d);
+  }
+}
+
+function flash(type) {
+  document.querySelectorAll('.dot').forEach(d => {
+    d.className = 'dot ' + (type === 'ok' ? 'filled' : 'err');
+  });
+}
+
+function msg(t) { document.getElementById('msg').textContent = t; }
+
+function grid() {
+  const c = document.getElementById('bg');
+  const x = c.getContext('2d');
+  c.width = window.innerWidth; c.height = window.innerHeight;
+  (function draw() {
+    x.clearRect(0, 0, c.width, c.height);
+    const t = Date.now() / 4000; const sp = 28;
+    x.strokeStyle = '#38bdf8'; x.lineWidth = 0.5;
+    for (let i = 0; i < c.width; i += sp) {
+      x.globalAlpha = 0.25 + 0.25 * Math.sin(t + i * 0.04);
+      x.beginPath(); x.moveTo(i, 0); x.lineTo(i, c.height); x.stroke();
+    }
+    for (let i = 0; i < c.height; i += sp) {
+      x.globalAlpha = 0.18 + 0.18 * Math.sin(t * 1.3 + i * 0.04);
+      x.beginPath(); x.moveTo(0, i); x.lineTo(c.width, i); x.stroke();
+    }
+    requestAnimationFrame(draw);
+  })();
+}
+
+function min()  { ipcRenderer.send('window-minimize'); }
+function quit() { ipcRenderer.send('pin-quit'); }
+</script>
+</body>
+</html>

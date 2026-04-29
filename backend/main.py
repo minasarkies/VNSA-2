@@ -1,0 +1,238 @@
+"""VNSA 2.0 Backend - lifespan, no Unicode print chars"""
+import asyncio
+import base64
+import json
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from core.agent import VNSAAgent
+from core.voice_output import VoiceOutput
+from core.voice_input import VoiceInput
+from core.health_monitor import HealthMonitor
+from memory.manager import MemoryManager
+from config.settings import Settings
+
+
+def _safe_print(msg: str):
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode('ascii', errors='replace').decode('ascii'))
+
+
+settings  = Settings()
+memory    = MemoryManager(settings)
+voice_out = VoiceOutput(settings)
+voice_in  = VoiceInput(settings)
+agent     = VNSAAgent(settings, memory)
+health    = HealthMonitor(settings, voice_out, voice_in, agent)
+
+connections: list[WebSocket] = []
+_nexus_task = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _safe_print("[VNSA 2.0] Backend starting...")
+    asyncio.get_event_loop().create_task(_health_loop())
+    _safe_print("[VNSA 2.0] Ready - ws://127.0.0.1:8765")
+    yield
+    _safe_print("[VNSA 2.0] Shutdown")
+
+
+app = FastAPI(title="VNSA 2.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
+
+
+async def broadcast(event: str, data: dict):
+    msg  = json.dumps({"event": event, **data})
+    dead = []
+    for ws in connections:
+        try:
+            await ws.send_text(msg)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        if ws in connections:
+            connections.remove(ws)
+
+
+@app.websocket("/ws")
+async def ws_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    connections.append(websocket)
+    status = await health.get_status()
+    await websocket.send_text(json.dumps({"event": "health", **status}))
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            msg = json.loads(raw)
+            await handle_message(msg, websocket)
+    except WebSocketDisconnect:
+        if websocket in connections:
+            connections.remove(websocket)
+    except Exception as e:
+        _safe_print(f"[WS] Error: {e}")
+        if websocket in connections:
+            connections.remove(websocket)
+
+
+async def handle_message(msg: dict, ws: WebSocket):
+    global _nexus_task
+    event = msg.get("event")
+
+    if event == "chat":
+        voice_out.stop()
+        text  = msg.get("text", "").strip()
+        files = msg.get("files", [])
+        if not text and not files:
+            return
+        await broadcast("thinking", {"text": "..."})
+        try:
+            response = await asyncio.get_event_loop().run_in_executor(
+                None, _chat_with_files, text, files
+            )
+            await broadcast("response", {"text": response, "from": "vnsa"})
+            if settings.mode in ("ECHO", "NEXUS"):
+                asyncio.get_event_loop().run_in_executor(None, voice_out.speak, response)
+        except Exception as e:
+            await broadcast("error", {"text": str(e)})
+
+    elif event == "voice_start":
+        voice_out.stop()
+        asyncio.get_event_loop().create_task(_voice_capture())
+
+    elif event == "voice_stop":
+        voice_in.stop()
+
+    elif event == "mode_change":
+        new_mode = msg.get("mode", "CIPHER")
+        if settings.mode == "NEXUS" and new_mode != "NEXUS":
+            if _nexus_task and not _nexus_task.done():
+                _nexus_task.cancel()
+        settings.mode = new_mode
+        agent.mode    = new_mode
+        if new_mode == "CIPHER":
+            voice_out.stop()
+        if new_mode == "NEXUS":
+            _nexus_task = asyncio.get_event_loop().create_task(_nexus_loop())
+        await broadcast("mode_ack", {"mode": new_mode})
+
+    elif event == "health_check":
+        status = await health.get_status()
+        await ws.send_text(json.dumps({"event": "health", **status}))
+
+    elif event == "lens_frame":
+        img_b64 = msg.get("image", "")
+        if img_b64:
+            asyncio.get_event_loop().create_task(_lens_analyse(img_b64))
+
+    elif event == "settings_save":
+        settings.update(msg.get("settings", {}))
+        await broadcast("settings_ack", {"ok": True})
+
+
+def _chat_with_files(text: str, files: list) -> str:
+    if not files:
+        return agent.chat(text)
+    parts = []
+    for f in files:
+        name     = f.get("name", "file")
+        ftype    = f.get("type", "")
+        data_b64 = f.get("data_b64", "")
+        if not data_b64:
+            continue
+        if ftype.startswith("image/"):
+            parts.append({"type": "image",
+                          "source": {"type": "base64",
+                                     "media_type": ftype,
+                                     "data": data_b64}})
+        else:
+            try:
+                decoded = base64.b64decode(data_b64).decode("utf-8", errors="replace")
+                parts.append({"type": "text", "text": f"[File: {name}]\n{decoded[:8000]}"})
+            except Exception:
+                parts.append({"type": "text", "text": f"[File: {name} - binary]"})
+    if text:
+        parts.append({"type": "text", "text": text})
+    return agent.chat_with_content(parts)
+
+
+async def _voice_capture():
+    await broadcast("voice_status", {"status": "listening"})
+    try:
+        text = await asyncio.get_event_loop().run_in_executor(None, voice_in.listen_once)
+        if text:
+            await broadcast("voice_heard", {"text": text})
+            voice_out.stop()
+            await broadcast("thinking", {"text": "..."})
+            response = await asyncio.get_event_loop().run_in_executor(None, agent.chat, text)
+            await broadcast("response", {"text": response, "from": "vnsa"})
+            if settings.mode in ("ECHO", "NEXUS"):
+                asyncio.get_event_loop().run_in_executor(None, voice_out.speak, response)
+        else:
+            await broadcast("voice_status", {"status": "idle", "error": "Could not understand"})
+    except Exception as e:
+        await broadcast("voice_status", {"status": "error", "error": str(e)})
+
+
+async def _nexus_loop():
+    await broadcast("voice_status", {"status": "continuous_start"})
+    while settings.mode == "NEXUS":
+        try:
+            text = await asyncio.get_event_loop().run_in_executor(None, voice_in.listen_once)
+            if text and settings.mode == "NEXUS":
+                voice_out.stop()
+                await broadcast("voice_heard", {"text": text})
+                await broadcast("thinking", {"text": "..."})
+                response = await asyncio.get_event_loop().run_in_executor(None, agent.chat, text)
+                await broadcast("response", {"text": response, "from": "vnsa"})
+                await asyncio.get_event_loop().run_in_executor(None, voice_out.speak, response)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            if settings.mode == "NEXUS":
+                await broadcast("voice_status", {"status": "error", "error": str(e)})
+                await asyncio.sleep(1)
+
+
+async def _lens_analyse(img_b64: str):
+    try:
+        insight = await asyncio.get_event_loop().run_in_executor(
+            None, agent.analyse_screen, img_b64
+        )
+        if insight:
+            await broadcast("lens_insight", insight)
+            if settings.mode in ("ECHO", "NEXUS"):
+                asyncio.get_event_loop().run_in_executor(
+                    None, voice_out.speak, insight.get("insight", "")
+                )
+    except Exception as e:
+        _safe_print(f"[LENS] Error: {e}")
+
+
+async def _health_loop():
+    while True:
+        await asyncio.sleep(30)
+        if not connections:
+            continue
+        status = await health.get_status()
+        await broadcast("health", status)
+        issues = [k for k, v in status.get("checks", {}).items() if not v.get("ok")]
+        if issues:
+            txt = health.describe_issues(issues)
+            await broadcast("response", {"text": txt, "from": "vnsa", "type": "health_alert"})
+            if settings.mode in ("ECHO", "NEXUS"):
+                asyncio.get_event_loop().run_in_executor(None, voice_out.speak, txt)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")

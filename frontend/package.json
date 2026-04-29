@@ -1,0 +1,13 @@
+{
+  "name": "vnsa-2",
+  "version": "2.0.0",
+  "description": "VNSA 2.0 — Virtual Neural Synthetic Assistant",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^41.3.0"
+  }
+}

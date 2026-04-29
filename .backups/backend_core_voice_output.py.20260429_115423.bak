@@ -1,0 +1,248 @@
+"""
+VNSA 2.0 - Voice Output
+ElevenLabs streaming TTS. Only voice engine - no silent fallbacks.
+"""
+import io
+import os
+import queue
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+
+def _safe_print(msg: str):
+    """Print without crashing on Windows CP1252 terminals."""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        print(msg.encode('ascii', errors='replace').decode('ascii'))
+
+
+class VoiceOutput:
+    def __init__(self, settings):
+        self.settings  = settings
+        self._q        = queue.Queue()
+        self._stop_ev  = threading.Event()
+        self._speaking = False
+        self._ready    = False
+        self._error    = ""
+        self._player   = self._detect_player()
+        self._thread   = threading.Thread(target=self._worker, daemon=True)
+        self._thread.start()
+        threading.Thread(target=self._test_connection, daemon=True).start()
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def speak(self, text: str, blocking: bool = False):
+        if not text or not text.strip():
+            return
+        clean = self._clean(text)
+        if not clean:
+            return
+        while not self._q.empty():
+            try:
+                self._q.get_nowait()
+            except Exception:
+                break
+        self._q.put(clean)
+        if blocking:
+            while self._speaking or not self._q.empty():
+                time.sleep(0.05)
+
+    def stop(self):
+        self._stop_ev.set()
+        while not self._q.empty():
+            try:
+                self._q.get_nowait()
+            except Exception:
+                break
+        self._speaking = False
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    @property
+    def is_speaking(self) -> bool:
+        return self._speaking
+
+    # ── Connection test ───────────────────────────────────────────────────────
+
+    def _test_connection(self):
+        key   = self.settings.elevenlabs_key
+        voice = self.settings.elevenlabs_voice
+
+        if not key or "YOUR" in key:
+            self._error = "ElevenLabs API key not set in keys.env"
+            _safe_print(f"[Voice] WARN: {self._error}")
+            return
+
+        if not voice:
+            self._error = "ElevenLabs Voice ID not set in keys.env"
+            _safe_print(f"[Voice] WARN: {self._error}")
+            return
+
+        try:
+            import requests
+            r = requests.get(
+                "https://api.elevenlabs.io/v1/user",
+                headers={"xi-api-key": key},
+                timeout=8
+            )
+            if r.status_code == 200:
+                self._ready = True
+                self._error = ""
+                _safe_print("[Voice] OK: ElevenLabs connected")
+            elif r.status_code == 401:
+                self._error = "ElevenLabs API key invalid (401). Check keys.env."
+                _safe_print(f"[Voice] FAIL: {self._error}")
+            else:
+                self._error = f"ElevenLabs returned {r.status_code}"
+                _safe_print(f"[Voice] FAIL: {self._error}")
+        except Exception as e:
+            self._error = f"Cannot reach ElevenLabs: {e}"
+            _safe_print(f"[Voice] FAIL: {self._error}")
+
+    # ── Worker ────────────────────────────────────────────────────────────────
+
+    def _worker(self):
+        while True:
+            try:
+                text = self._q.get(timeout=1)
+                if text is None:
+                    break
+                if self._stop_ev.is_set():
+                    self._stop_ev.clear()
+                    continue
+                self._speaking = True
+                self._synthesise_and_play(text)
+                self._speaking = False
+            except queue.Empty:
+                continue
+            except Exception as e:
+                self._speaking = False
+                _safe_print(f"[Voice] Worker error: {e}")
+
+    def _synthesise_and_play(self, text: str):
+        if not self._ready:
+            _safe_print(f"[Voice] Skip speech - not ready: {self._error}")
+            return
+
+        key   = self.settings.elevenlabs_key
+        voice = self.settings.elevenlabs_voice
+
+        try:
+            import requests
+            r = requests.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice}/stream",
+                headers={
+                    "xi-api-key": key,
+                    "Content-Type": "application/json",
+                    "Accept": "audio/mpeg",
+                },
+                json={
+                    "text": text,
+                    "model_id": "eleven_turbo_v2",
+                    "voice_settings": {
+                        "stability": 0.5,
+                        "similarity_boost": 0.75,
+                        "style": 0.0,
+                        "use_speaker_boost": True,
+                    },
+                },
+                stream=True,
+                timeout=20,
+            )
+
+            if r.status_code == 401:
+                self._ready = False
+                self._error = "ElevenLabs key rejected (401). Update keys.env."
+                _safe_print(f"[Voice] FAIL: {self._error}")
+                return
+
+            if r.status_code != 200:
+                _safe_print(f"[Voice] ElevenLabs error {r.status_code}")
+                return
+
+            audio = b"".join(r.iter_content(chunk_size=4096))
+            self._play_audio(audio)
+
+        except Exception as e:
+            self._ready = False
+            self._error = f"ElevenLabs request failed: {e}"
+            _safe_print(f"[Voice] FAIL: {self._error}")
+
+    def _play_audio(self, data: bytes):
+        try:
+            import pygame
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            sound = pygame.mixer.Sound(io.BytesIO(data))
+            ch = sound.play()
+            while ch.get_busy():
+                if self._stop_ev.is_set():
+                    ch.stop()
+                    self._stop_ev.clear()
+                    break
+                time.sleep(0.02)
+            return
+        except Exception:
+            pass
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            f.write(data)
+            tmp = f.name
+        try:
+            flags = 0x08000000 if sys.platform == "win32" else 0
+            if self._player == "mpg123":
+                subprocess.run(["mpg123", "-q", tmp], timeout=60, creationflags=flags)
+            elif self._player == "ffplay":
+                subprocess.run(
+                    ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", tmp],
+                    timeout=60, creationflags=flags
+                )
+            else:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["powershell", "-WindowStyle", "Hidden", "-Command",
+                         f"(New-Object Media.SoundPlayer).PlaySync()"],
+                        timeout=60, creationflags=flags
+                    )
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _detect_player() -> str:
+        try:
+            import pygame
+            return "pygame"
+        except ImportError:
+            pass
+        for p in ["mpg123", "ffplay"]:
+            try:
+                subprocess.run([p, "--version"], capture_output=True, timeout=3)
+                return p
+            except Exception:
+                pass
+        return "none"
+
+    @staticmethod
+    def _clean(text: str) -> str:
+        text = re.sub(r"```[\s\S]*?```", " ", text)
+        text = re.sub(r"`[^`]+`", " ", text)
+        text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
+        text = re.sub(r"#+\s*", "", text)
+        text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+        text = re.sub(r"[^\w\s.,!?;:()'\"%-]", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()[:1200]

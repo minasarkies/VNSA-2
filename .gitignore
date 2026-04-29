@@ -1,0 +1,38 @@
+# API keys — NEVER commit
+backend/config/keys.env
+backend/config/memory.json
+backend/config/prefs.json
+backend/config/email_credentials.json
+backend/config/credential_vault.bin
+backend/config/vault_meta.json
+backend/config/.keys_hash
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+venv/
+env/
+.env
+*.egg-info/
+dist/
+build/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+
+# Captures
+captures/
+screenshot_*.png
+camera_*.jpg
+region_*.png
+
+# Whisper cache
+~/.cache/whisper/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
