@@ -98,15 +98,16 @@ function toggleFullscreen() {
   if (isFullscreen) {
     mainWindow.setFullScreen(true);
     mainWindow.setAlwaysOnTop(false);
+    mainWindow.setBackgroundColor('#020912');
   } else {
     mainWindow.setFullScreen(false);
+    mainWindow.setBackgroundColor('#00000000');
     const { width, height } = screen.getPrimaryDisplay().workAreaSize;
     mainWindow.setSize(420, 720);
     mainWindow.setPosition(width - 440, Math.floor((height - 720) / 2));
   }
   mainWindow.webContents.send('fullscreen-change', isFullscreen);
 }
-
 // ── IPC ───────────────────────────────────────────────────────────────────────
 ipcMain.on('pin-ok', () => {
   pinWindow?.close();

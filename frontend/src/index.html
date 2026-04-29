@@ -36,7 +36,12 @@ html, body {
   background:var(--c-surf); border:1px solid var(--c-bdr);
   border-radius:var(--r); backdrop-filter:blur(24px);
   overflow:hidden; position:relative; transition:border-radius 0.3s; }
-#shell.fs { border-radius:0; }
+#shell.fs {
+  border-radius: 0;
+  background: var(--c-bg) !important;
+  backdrop-filter: none !important;
+  border-color: transparent;
+}
 
 #gc  { position:absolute; inset:0; pointer-events:none; z-index:0; opacity:0.06; }
 #scl { position:absolute; inset:0; pointer-events:none; z-index:1; border-radius:var(--r);
@@ -407,21 +412,40 @@ html, body {
         <input class="sinp" id="s-ant-key" type="password" placeholder="sk-ant-...">
       </div>
       <div class="sdiv"></div>
-      <!-- Email accounts -->
-      <div class="srow">
-        <div class="slbl">EMAIL ACCOUNTS</div>
-        <div class="stag" style="opacity:.7;margin-bottom:4px">Comma-separated Gmail/Outlook addresses linked via OAuth or app password</div>
-        <input class="sinp" id="s-email-accounts" placeholder="you@gmail.com, work@outlook.com">
-      </div>
-      <div class="srow">
-        <div class="slbl">DEFAULT EMAIL ACCOUNT</div>
-        <input class="sinp" id="s-email-default" placeholder="you@gmail.com">
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="sbtn" id="s-email-save">SAVE EMAIL SETTINGS</button>
-        <button class="sbtn" id="s-email-test">TEST EMAIL ACCESS</button>
-      </div>
-      <div class="stag" id="s-email-status"></div>
+<div class="stag">EMAIL SETUP</div>
+<div class="srow">
+  <label class="slbl">EMAIL ADDRESS</label>
+  <input id="s-email-addr" class="sinp" type="email" placeholder="you@gmail.com">
+</div>
+<div class="srow">
+  <label class="slbl">APP PASSWORD <span style="opacity:.5;font-size:8px">— not your real password</span></label>
+  <input id="s-email-pass" class="sinp" type="password" placeholder="xxxx xxxx xxxx xxxx">
+</div>
+<div style="display:grid;grid-template-columns:1fr 60px;gap:6px">
+  <div class="srow">
+    <label class="slbl">IMAP HOST</label>
+    <input id="s-email-imap" class="sinp" placeholder="imap.gmail.com">
+  </div>
+  <div class="srow">
+    <label class="slbl">PORT</label>
+    <input id="s-email-imap-port" class="sinp" type="number" value="993">
+  </div>
+</div>
+<div style="display:grid;grid-template-columns:1fr 60px;gap:6px">
+  <div class="srow">
+    <label class="slbl">SMTP HOST</label>
+    <input id="s-email-smtp" class="sinp" placeholder="smtp.gmail.com">
+  </div>
+  <div class="srow">
+    <label class="slbl">PORT</label>
+    <input id="s-email-smtp-port" class="sinp" type="number" value="587">
+  </div>
+</div>
+<div style="display:flex;gap:6px">
+  <button id="s-email-save" class="sbtn">SAVE</button>
+  <button id="s-email-test" class="sbtn">TEST</button>
+</div>
+<div id="s-email-status" class="stag" style="min-height:14px"></div>
       <div class="sdiv"></div>
       <!-- Lens interval -->
       <div class="srow">
@@ -807,31 +831,66 @@ document.getElementById('s-health-check').addEventListener('click', () => {
 });
 
 // ── Email settings ────────────────────────────────────────────────────────────
+const EMAIL_CREDS_FILE = path.join(__dirname, '../../backend/config/email_credentials.json');
+
+const EMAIL_PRESETS = {
+  'gmail.com':   { imap_host:'imap.gmail.com',        imap_port:993, smtp_host:'smtp.gmail.com',        smtp_port:587 },
+  'outlook.com': { imap_host:'outlook.office365.com', imap_port:993, smtp_host:'smtp.office365.com',    smtp_port:587 },
+  'hotmail.com': { imap_host:'outlook.office365.com', imap_port:993, smtp_host:'smtp.office365.com',    smtp_port:587 },
+  'yahoo.com':   { imap_host:'imap.mail.yahoo.com',   imap_port:993, smtp_host:'smtp.mail.yahoo.com',   smtp_port:587 },
+  'icloud.com':  { imap_host:'imap.mail.me.com',      imap_port:993, smtp_host:'smtp.mail.me.com',      smtp_port:587 },
+};
+
 function loadEmailSettings() {
   try {
-    const lines = fs.readFileSync(KEYS_FILE, 'utf-8').split('\n');
-    const kv = {};
-    lines.forEach(l => { const [k, ...v] = l.split('='); if (k && v.length) kv[k.trim()] = v.join('=').trim(); });
-    document.getElementById('s-email-accounts').value = kv['EMAIL_ACCOUNTS'] || '';
-    document.getElementById('s-email-default').value  = kv['EMAIL_DEFAULT']  || '';
+    if (!fs.existsSync(EMAIL_CREDS_FILE)) return;
+    const accounts = JSON.parse(fs.readFileSync(EMAIL_CREDS_FILE, 'utf-8'));
+    const valid = accounts.filter(a => a.email && !a._note);
+    if (valid.length === 0) return;
+    const a = valid[0];
+    document.getElementById('s-email-addr').value      = a.email     || '';
+    document.getElementById('s-email-pass').value      = a.password  || '';
+    document.getElementById('s-email-imap').value      = a.imap_host || '';
+    document.getElementById('s-email-imap-port').value = a.imap_port || 993;
+    document.getElementById('s-email-smtp').value      = a.smtp_host || '';
+    document.getElementById('s-email-smtp-port').value = a.smtp_port || 587;
   } catch(e) {}
 }
 
+document.getElementById('s-email-addr').addEventListener('blur', () => {
+  const addr   = document.getElementById('s-email-addr').value.trim();
+  const domain = addr.split('@')[1]?.toLowerCase();
+  if (!domain) return;
+  const preset = EMAIL_PRESETS[domain];
+  if (preset) {
+    document.getElementById('s-email-imap').value      = preset.imap_host;
+    document.getElementById('s-email-imap-port').value = preset.imap_port;
+    document.getElementById('s-email-smtp').value      = preset.smtp_host;
+    document.getElementById('s-email-smtp-port').value = preset.smtp_port;
+  }
+});
+
 document.getElementById('s-email-save').addEventListener('click', () => {
+  const addr     = document.getElementById('s-email-addr').value.trim();
+  const password = document.getElementById('s-email-pass').value.trim();
+  const imapHost = document.getElementById('s-email-imap').value.trim();
+  const imapPort = parseInt(document.getElementById('s-email-imap-port').value) || 993;
+  const smtpHost = document.getElementById('s-email-smtp').value.trim();
+  const smtpPort = parseInt(document.getElementById('s-email-smtp-port').value) || 587;
+
+  if (!addr || !password || !imapHost || !smtpHost) {
+    document.getElementById('s-email-status').textContent = 'Fill in all fields.';
+    return;
+  }
   try {
-    let content = fs.readFileSync(KEYS_FILE, 'utf-8');
-    const updates = {
-      'EMAIL_ACCOUNTS': document.getElementById('s-email-accounts').value.trim(),
-      'EMAIL_DEFAULT':  document.getElementById('s-email-default').value.trim(),
-    };
-    for (const [k, v] of Object.entries(updates)) {
-      if (v !== undefined) {
-        const re = new RegExp(`^${k}=.*$`, 'm');
-        content = re.test(content) ? content.replace(re, `${k}=${v}`) : content + `\n${k}=${v}`;
-      }
+    let accounts = [];
+    if (fs.existsSync(EMAIL_CREDS_FILE)) {
+      try { accounts = JSON.parse(fs.readFileSync(EMAIL_CREDS_FILE, 'utf-8')); } catch(e) { accounts = []; }
     }
-    fs.writeFileSync(KEYS_FILE, content, 'utf-8');
-    document.getElementById('s-email-status').textContent = 'Email settings saved. Restart backend to apply.';
+    accounts = accounts.filter(a => a.email !== addr && !a._note);
+    accounts.unshift({ email: addr, password, imap_host: imapHost, imap_port: imapPort, smtp_host: smtpHost, smtp_port: smtpPort });
+    fs.writeFileSync(EMAIL_CREDS_FILE, JSON.stringify(accounts, null, 2), 'utf-8');
+    document.getElementById('s-email-status').textContent = 'Saved. Restart backend to apply.';
     setTimeout(() => document.getElementById('s-email-status').textContent = '', 4000);
   } catch(e) {
     document.getElementById('s-email-status').textContent = 'Save failed: ' + e.message;
@@ -848,7 +907,6 @@ document.getElementById('s-change-pin').addEventListener('click', () => {
   const PIN_FILE = path.join(__dirname, '../../backend/config/.pin_hash');
   try { fs.unlinkSync(PIN_FILE); } catch(e) {}
   addSys('PIN cleared. Restart to set a new one.');
-  document.getElementById('settings-overlay').classList.remove('on');
 });
 
 // ── Animated grid ─────────────────────────────────────────────────────────────
