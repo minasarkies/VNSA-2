@@ -1,0 +1,128 @@
+"""
+VNSA 2.0 — Authentication Module
+Handles VNSA session credential storage and verification.
+- Passwords are hashed with bcrypt (cost factor 12) — never stored plain
+- Credentials stored in backend/config/.vnsa_auth (gitignored)
+- Rate limiting: max 5 attempts per 60s window (in-memory, per-process)
+"""
+import hashlib
+import hmac
+import json
+import time
+from pathlib import Path
+
+# ── Try bcrypt, fall back to PBKDF2-HMAC-SHA256 if not installed ──────────────
+try:
+    import bcrypt
+    _USE_BCRYPT = True
+except ImportError:
+    _USE_BCRYPT = False
+
+AUTH_FILE = Path(__file__).parent / ".vnsa_auth"
+
+# ── In-memory rate limiter ─────────────────────────────────────────────────────
+_attempts: list[float] = []
+_MAX_ATTEMPTS = 5
+_WINDOW_SECONDS = 60
+
+
+def _rate_check() -> bool:
+    """Return True if request is allowed, False if rate-limited."""
+    global _attempts
+    now = time.time()
+    _attempts = [t for t in _attempts if now - t < _WINDOW_SECONDS]
+    if len(_attempts) >= _MAX_ATTEMPTS:
+        return False
+    _attempts.append(now)
+    return True
+
+
+def _hash_password(password: str) -> str:
+    """Hash password using bcrypt (preferred) or PBKDF2 fallback."""
+    if _USE_BCRYPT:
+        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12))
+        return hashed.decode("utf-8")
+    else:
+        # PBKDF2-HMAC-SHA256 fallback — still secure, 390,000 iterations (NIST 2023)
+        import os
+        salt = os.urandom(32)
+        key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 390_000)
+        return "pbkdf2:" + salt.hex() + ":" + key.hex()
+
+
+def _verify_hash(password: str, stored: str) -> bool:
+    """Verify password against stored hash."""
+    try:
+        if stored.startswith("pbkdf2:"):
+            _, salt_hex, key_hex = stored.split(":")
+            salt = bytes.fromhex(salt_hex)
+            key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 390_000)
+            return hmac.compare_digest(key.hex(), key_hex)
+        else:
+            if _USE_BCRYPT:
+                return bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8"))
+            return False
+    except Exception:
+        return False
+
+
+def credentials_exist() -> bool:
+    """Return True if VNSA auth credentials have been set up."""
+    return AUTH_FILE.exists() and AUTH_FILE.stat().st_size > 0
+
+
+def setup_credentials(username: str, password: str) -> bool:
+    """
+    Hash and store VNSA credentials.
+    Called once during initial setup. Returns True on success.
+    """
+    try:
+        data = {
+            "username_hash": hashlib.sha256(username.strip().lower().encode()).hexdigest(),
+            "password_hash": _hash_password(password),
+            "created_at": int(time.time()),
+        }
+        AUTH_FILE.write_text(json.dumps(data), encoding="utf-8")
+        # Restrict file permissions on non-Windows
+        try:
+            import stat
+            AUTH_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def verify_credentials(username: str, password: str) -> bool:
+    """
+    Verify VNSA session credentials.
+    Returns True only if username + password match stored hashes.
+    Applies rate limiting to prevent brute force.
+    """
+    if not _rate_check():
+        return False  # Rate limited
+
+    if not credentials_exist():
+        return False
+
+    try:
+        data = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        username_hash = hashlib.sha256(username.strip().lower().encode()).hexdigest()
+        if not hmac.compare_digest(username_hash, data.get("username_hash", "")):
+            return False
+        return _verify_hash(password, data.get("password_hash", ""))
+    except Exception:
+        return False
+
+
+def change_credentials(old_password: str, username: str, new_password: str) -> bool:
+    """
+    Change credentials after verifying the old password.
+    Returns True on success.
+    """
+    if not credentials_exist():
+        return False
+    if not verify_credentials(username, old_password):
+        return False
+    return setup_credentials(username, new_password)

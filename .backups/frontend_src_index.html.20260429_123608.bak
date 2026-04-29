@@ -356,29 +356,6 @@ html, body {
     accept="image/*,.pdf,.txt,.md,.py,.js,.html,.css,.json,.csv,.docx,.xlsx">
 </div>
 
-<!-- Email Login Modal -->
-<div id="email-login-overlay">
-  <div id="elp">
-    <div id="elp-hdr">
-      <div class="el-logo">&#9632; EMAIL ACCESS</div>
-      <div class="el-sub">AUTHENTICATE TO CONTINUE</div>
-    </div>
-    <div id="elp-body">
-      <div class="el-field">
-        <div class="el-lbl">USERNAME</div>
-        <input class="el-inp" id="el-username" type="text" placeholder="your@email.com" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="el-field">
-        <div class="el-lbl">PASSWORD</div>
-        <input class="el-inp" id="el-password" type="password" placeholder="••••••••••">
-      </div>
-      <div id="el-err"></div>
-      <button id="el-login-btn">AUTHENTICATE</button>
-      <div id="el-cancel">CANCEL</div>
-    </div>
-  </div>
-</div>
-
 <!-- Settings overlay -->
 <div id="settings-overlay">
   <div id="sp">

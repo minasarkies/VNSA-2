@@ -18,9 +18,6 @@ from core.voice_input import VoiceInput
 from core.health_monitor import HealthMonitor
 from memory.manager import MemoryManager
 from config.settings import Settings
-from config.auth import verify_credentials, credentials_exist, setup_credentials, change_credentials
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 
 def _safe_print(msg: str):
@@ -235,27 +232,6 @@ async def _health_loop():
             await broadcast("response", {"text": txt, "from": "vnsa", "type": "health_alert"})
             if settings.mode in ("ECHO", "NEXUS"):
                 asyncio.get_event_loop().run_in_executor(None, voice_out.speak, txt)
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-@app.post("/auth/login")
-async def auth_login(req: LoginRequest):
-    """Verify VNSA session credentials."""
-    if not credentials_exist():
-        return JSONResponse({"success": False, "error": "no_credentials"}, status_code=401)
-    if verify_credentials(req.username, req.password):
-        return JSONResponse({"success": True})
-    return JSONResponse({"success": False, "error": "invalid"}, status_code=401)
-
-
-@app.get("/auth/status")
-async def auth_status():
-    """Check if credentials have been configured."""
-    return JSONResponse({"configured": credentials_exist()})
 
 
 if __name__ == "__main__":

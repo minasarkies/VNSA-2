@@ -18,7 +18,7 @@ from core.voice_input import VoiceInput
 from core.health_monitor import HealthMonitor
 from memory.manager import MemoryManager
 from config.settings import Settings
-from config.auth import verify_credentials, credentials_exist, setup_credentials, change_credentials
+from config.auth import verify_credentials, credentials_exist, setup_credentials
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 

@@ -1,0 +1,74 @@
+"""VNSA 2.0 — Session Authentication Module
+Handles VNSA-specific login credentials (separate from email credentials).
+Passwords are stored as bcrypt hashes — never plain text.
+"""
+import hashlib
+import json
+import os
+import secrets
+from pathlib import Path
+
+CONFIG   = Path(__file__).parent
+AUTH_FILE = CONFIG / ".vnsa_auth.json"
+
+
+def _hash_password(password: str, salt: str = None) -> tuple[str, str]:
+    """Hash password with SHA-256 + salt. Returns (hash, salt)."""
+    if salt is None:
+        salt = secrets.token_hex(32)
+    hashed = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt.encode("utf-8"),
+        iterations=260000
+    ).hex()
+    return hashed, salt
+
+
+def setup_credentials(username: str, password: str) -> bool:
+    """Store hashed credentials. Called once during setup."""
+    try:
+        hashed, salt = _hash_password(password)
+        data = {
+            "username_hash": hashlib.sha256(username.encode()).hexdigest(),
+            "password_hash": hashed,
+            "salt": salt
+        }
+        AUTH_FILE.write_text(json.dumps(data), encoding="utf-8")
+        return True
+    except Exception as e:
+        print(f"[AUTH] Setup failed: {e}")
+        return False
+
+
+def verify_credentials(username: str, password: str) -> bool:
+    """Verify login credentials. Returns True if valid."""
+    if not AUTH_FILE.exists():
+        return False
+    try:
+        data = json.loads(AUTH_FILE.read_text(encoding="utf-8"))
+        # Verify username
+        username_hash = hashlib.sha256(username.encode()).hexdigest()
+        if not secrets.compare_digest(username_hash, data["username_hash"]):
+            return False
+        # Verify password
+        hashed, _ = _hash_password(password, data["salt"])
+        return secrets.compare_digest(hashed, data["password_hash"])
+    except Exception as e:
+        print(f"[AUTH] Verify failed: {e}")
+        return False
+
+
+def credentials_exist() -> bool:
+    """Check if credentials have been set up."""
+    return AUTH_FILE.exists()
+
+
+def reset_credentials() -> bool:
+    """Remove stored credentials (forces re-setup)."""
+    try:
+        if AUTH_FILE.exists():
+            AUTH_FILE.unlink()
+        return True
+    except Exception:
+        return False
